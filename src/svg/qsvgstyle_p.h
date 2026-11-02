@@ -27,6 +27,7 @@
 #include "QtGui/qfont.h"
 #include <qdebug.h>
 #include "qtsvgglobal_p.h"
+#include "qsvgcsscolor_p.h"
 
 QT_BEGIN_NAMESPACE
 
@@ -246,6 +247,8 @@ public:
     void setFillOpacity(qreal opacity);
     void setFillStyle(QSvgPaintStyleProperty* style);
     void setBrush(QBrush brush);
+    // a CSS colour, resolved for each painter's target when it is applied
+    void setCssColor(const QSvgCssColor &color, const QString &text);
 
     const QBrush & qbrush() const
     {
@@ -294,6 +297,8 @@ private:
     uint m_fillRuleSet : 1;
     uint m_fillOpacitySet : 1;
     uint m_fillSet : 1;
+
+    QSvgCssPaint m_cssFill;
 };
 
 class Q_SVG_EXPORT QSvgViewportFillStyle : public QSvgStyleProperty
@@ -416,12 +421,21 @@ public:
     {
         m_stroke.setBrush(brush);
         m_style.reset();
+        m_cssStroke = QSvgCssPaint();
         m_strokeSet = 1;
+    }
+
+    // a CSS colour, resolved for each painter's target when it is applied
+    void setCssColor(const QSvgCssColor &color, const QString &text)
+    {
+        setStroke(QBrush(color.toQColor()));
+        m_cssStroke.setColor(color, text);
     }
 
     void setStyle(QSvgPaintStyleProperty *style)
     {
         m_style.reset(style);
+        m_cssStroke = QSvgCssPaint();
         m_strokeSet = 1;
     }
 
@@ -531,6 +545,8 @@ private:
     uint m_strokeOpacitySet : 1;
     uint m_strokeWidthSet : 1;
     uint m_vectorEffectSet : 1;
+
+    QSvgCssPaint m_cssStroke;
 };
 
 class Q_SVG_EXPORT QSvgSolidColorStyle : public QSvgPaintStyleProperty
@@ -546,10 +562,15 @@ public:
         return m_solidColor;
     }
 
-    QBrush brush(QPainter *, const QSvgNode *, QSvgExtraStates &) override
+    QBrush brush(QPainter *p, const QSvgNode *, QSvgExtraStates &) override
     {
+        if (m_css.isValid())
+            return m_css.brush(p);
         return m_solidColor;
     }
+
+    // a CSS colour, resolved for each painter's target
+    void setCssColor(const QSvgCssColor &color, const QString &text) { m_css.setColor(color, text); }
 
 private:
     // solid-color       v 	x 	'inherit' | <SVGColor.datatype>
@@ -558,6 +579,8 @@ private:
 
     QBrush m_oldFill;
     QPen   m_oldStroke;
+
+    QSvgCssPaint m_css;
 };
 
 class Q_SVG_EXPORT QSvgGradientStyle : public QSvgPaintStyleProperty
@@ -595,6 +618,11 @@ public:
     }
 
     QBrush brush(QPainter *, const QSvgNode *, QSvgExtraStates &) override;
+
+    // the CSS colours of the stops, in the order of qgradient()->stops(); resolved for each painter's target
+    void appendCssStop(const QSvgCssColor &color) { m_cssStops.append(color); m_cssCached = false; }
+    void setCssStops(const QList<QSvgCssColor> &stops) { m_cssStops = stops; m_cssCached = false; }
+    const QList<QSvgCssColor> &cssStops() const { return m_cssStops; }
 private:
     QGradient      *m_gradient;
     QTransform m_transform;
@@ -602,6 +630,11 @@ private:
     QSvgDocument *m_doc{nullptr};
     QString           m_link;
     bool m_gradientStopsSet;
+
+    QList<QSvgCssColor> m_cssStops;
+    QGradient m_cssGradient;
+    QSvgCssColorTarget m_cssTarget;
+    bool m_cssCached = false;
 };
 
 class Q_SVG_EXPORT QSvgPatternStyle : public QSvgPaintStyleProperty

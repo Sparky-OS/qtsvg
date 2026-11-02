@@ -21,6 +21,7 @@
 #include "QtCore/qstack.h"
 #include <QtCore/QLoggingCategory>
 #include "qsvgstyle_p.h"
+#include "qsvgcsscolor_p.h"
 #if QT_CONFIG(cssparser)
 #include <QtSvg/private/qsvgcsshandler_p.h>
 #include <QtSvg/private/qsvgcssproperties_p.h>
@@ -63,9 +64,11 @@ public:
     QSvgUtils::LengthType defaultCoordinateSystem() const;
 
     void pushColor(const QColor &color);
+    void pushColor(const QSvgCssColor &color);
     void pushColorCopy();
     void popColor();
     QColor currentColor() const;
+    QSvgCssColor currentCssColor() const;
 
     void pushUnresolvedStyle(QSvgStyleProperty *prop);
 
@@ -123,7 +126,7 @@ private:
 
     QSvgUtils::LengthType m_defaultCoords;
 
-    QStack<QColor> m_colorStack;
+    QStack<QSvgCssColor> m_colorStack;
     QStack<int>    m_colorTagCount;
 
     int m_animEnd;

@@ -32,6 +32,8 @@
 #include "qtransform.h"
 #include "qvarlengtharray.h"
 #include "qimagereader.h"
+#include <QtGui/qguiapplication.h>
+#include <QtGui/qstylehints.h>
 
 #include "float.h"
 
@@ -410,35 +412,6 @@ static QList<qreal> parseNumbersList(QStringView *str)
     return points;
 }
 
-static QList<qreal> parsePercentageList(QStringView str)
-{
-    QList<qreal> points;
-
-    while (!str.isEmpty() && str.first().isSpace())
-        str.slice(1);
-    while ((!str.isEmpty() && str.first() >= QLatin1Char('0') && str.first() <= QLatin1Char('9'))
-           || str.startsWith(QLatin1Char('-')) || str.startsWith(QLatin1Char('+'))
-           || str.startsWith(QLatin1Char('.'))) {
-
-        points.append(QSvgUtils::toDouble(&str));
-
-        while (!str.isEmpty() && str.first().isSpace())
-            str.slice(1);
-        if (str.startsWith(QLatin1Char('%')))
-            str.slice(1);
-        while (!str.isEmpty() && str.first().isSpace())
-            str.slice(1);
-        if (str.startsWith(QLatin1Char(',')))
-            str.slice(1);
-
-        //eat the rest of space
-        while (!str.isEmpty() && str.first().isSpace())
-            str.slice(1);
-    }
-
-    return points;
-}
-
 static QStringView idFromUrl(QStringView url)
 {
     // The form is url(<IRI>), where IRI can be
@@ -460,69 +433,46 @@ static QStringView idFromUrl(QStringView url)
 /**
  * returns true when successfully set the color. false signifies
  * that the color should be inherited
+ *
+ * The value is a CSS <color> (CSS Color 4, CSS Color 5, CSS Color HDR 1); css, when given, receives it at full
+ * precision in its own colour space, for the styles to resolve it for the painter's target.
  */
-static bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler)
+static bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler, QSvgCssColor *css = nullptr)
 {
-    QStringView colorStrTr = colorStr.trimmed();
-    if (colorStrTr.isEmpty())
+    const QStringView text = colorStr.trimmed();
+    if (text.isEmpty() || text == tokens::inherit)
         return false;
 
-    switch(colorStrTr.at(0).unicode()) {
-
-        case '#':
-            {
-                // #rrggbb is very very common, so let's tackle it here
-                // rather than falling back to QColor
-                QRgb rgb;
-                bool ok = qsvg_get_hex_rgb(colorStrTr.constData(), colorStrTr.size(), &rgb);
-                if (ok)
-                    color.setRgb(rgb);
-                return ok;
-            }
-            break;
-
-        case 'r':
-            {
-                // starts with "rgb(", ends with ")" and consists of at least 7 characters "rgb(,,)"
-                if (colorStrTr.size() >= 7 && colorStrTr.at(colorStrTr.size() - 1) == QLatin1Char(')')
-                    && colorStrTr.mid(0, 4) == QLatin1String("rgb(")) {
-                    QStringView sv{ colorStrTr.sliced(4) };
-                    QList<qreal> compo = parseNumbersList(&sv);
-                    //1 means that it failed after reaching non-parsable
-                    //character which is going to be "%"
-                    if (compo.size() == 1) {
-                        compo = parsePercentageList(colorStrTr.sliced(4));
-                        for (int i = 0; i < compo.size(); ++i)
-                            compo[i] *= (qreal)2.55;
-                    }
-
-                    if (compo.size() == 3) {
-                        color = QColor(int(compo[0]),
-                                       int(compo[1]),
-                                       int(compo[2]));
-                        return true;
-                    }
-                    return false;
-                }
-            }
-            break;
-
-        case 'c':
-            if (colorStrTr == QLatin1String("currentColor")) {
-                color = handler->currentColor();
-                return true;
-            }
-            break;
-        case 'i':
-            if (colorStrTr == tokens::inherit)
-                return false;
-            break;
-        default:
-            break;
+    QSvgCssColorContext context;
+    context.currentColor = handler->currentCssColor();
+    // CSS Color 5 section 7: light-dark() follows the colour scheme, here the application's
+    if (qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+        context.darkScheme = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+    const QSvgCssColorParseResult result = qsvg_parseCssColor(text, context);
+    if (result.color.isValid()) {
+        color = result.color.toQColor();
+        if (css)
+            *css = result.color;
+        return true;
     }
 
-    color = QColor::fromString(colorStrTr);
-    return color.isValid();
+    // Qt SVG has always read #RRRGGGBBB and #RRRRGGGGBBBB, which CSS does not define: still read, and said
+    QRgb rgb;
+    if (text.startsWith(u'#') && (text.size() == 10 || text.size() == 13)
+        && qsvg_get_hex_rgb(text.constData(), int(text.size()), &rgb)) {
+        qCWarning(lcSvgHandler, "\"%s\" is not a CSS colour (CSS Color 4 section 5.2 defines 3, 4, 6 and 8 hex "
+                  "digits); it is read as Qt SVG has always read it", qPrintable(text.toString()));
+        color.setRgb(rgb);
+        if (css)
+            *css = QSvgCssColor::fromQColor(color);
+        return true;
+    }
+
+    // CSS Color 4 section 4.5: an invalid colour makes its declaration invalid, so the property keeps its
+    // inherited or initial value; say so, rather than draw that value without a word
+    qCWarning(lcSvgHandler, "Invalid colour \"%s\": %s; the declaration is ignored", qPrintable(text.toString()),
+              qPrintable(result.error));
+    return false;
 }
 
 void setAlpha(QStringView opacity, QColor *color)
@@ -535,12 +485,15 @@ void setAlpha(QStringView opacity, QColor *color)
 }
 
 static bool constructColor(QStringView colorStr, QStringView opacity,
-                           QColor &color, QSvgHandler *handler)
+                           QColor &color, QSvgHandler *handler, QSvgCssColor *css = nullptr)
 {
-    if (!resolveColor(colorStr, color, handler))
+    if (!resolveColor(colorStr, color, handler, css))
         return false;
-    if (!opacity.isEmpty())
+    if (!opacity.isEmpty()) {
         setAlpha(opacity, &color);
+        if (css)
+            css->setAlpha(color.alphaF());
+    }
     return true;
 }
 
@@ -585,9 +538,10 @@ static void parseColor(QSvgNode *,
                        QSvgHandler *handler)
 {
     QColor color;
-    if (constructColor(attributes.color, attributes.colorOpacity, color, handler)) {
+    QSvgCssColor css;
+    if (constructColor(attributes.color, attributes.colorOpacity, color, handler, &css)) {
         handler->popColor();
-        handler->pushColor(color);
+        handler->pushColor(css);
     }
 }
 
@@ -632,8 +586,9 @@ static void parseBrush(QSvgNode *node,
                 }
             } else if (attributes.fill != QLatin1String("none")) {
                 QColor color;
-                if (resolveColor(attributes.fill, color, handler))
-                    prop->setBrush(QBrush(color));
+                QSvgCssColor css;
+                if (resolveColor(attributes.fill, color, handler, &css))
+                    prop->setCssColor(css, attributes.fill.trimmed().toString());
             } else {
                 prop->setBrush(QBrush(Qt::NoBrush));
             }
@@ -797,8 +752,9 @@ static void parsePen(QSvgNode *node,
                     }
             } else if (attributes.stroke != QLatin1String("none")) {
                 QColor color;
-                if (resolveColor(attributes.stroke, color, handler))
-                    prop->setStroke(QBrush(color));
+                QSvgCssColor css;
+                if (resolveColor(attributes.stroke, color, handler, &css))
+                    prop->setCssColor(css, attributes.stroke.trimmed().toString());
             } else {
                 prop->setStroke(QBrush(Qt::NoBrush));
             }
@@ -2068,9 +2024,10 @@ static void parseBaseGradient(QSvgNode *node,
     const QStringView colorOpacityStr  = attributes.value(QLatin1String("color-opacity"));
 
     QColor color;
-    if (constructColor(colorStr, colorOpacityStr, color, handler)) {
+    QSvgCssColor css;
+    if (constructColor(colorStr, colorOpacityStr, color, handler, &css)) {
         handler->popColor();
-        handler->pushColor(color);
+        handler->pushColor(css);
     }
 
     QTransform matrix;
@@ -2085,6 +2042,7 @@ static void parseBaseGradient(QSvgNode *node,
             } else {
                 grad->setStops(inherited->qgradient()->stops());
                 gradProp->setGradientStopsSet(inherited->gradientStopsSet());
+                gradProp->setCssStops(inherited->cssStops());
             }
 
             matrix = inherited->qtransform();
@@ -3030,9 +2988,11 @@ static QSvgStyleProperty *createSolidColorNode(QSvgNode *parent,
         solidOpacityStr = attributes.value(QLatin1String("opacity"));
 
     QColor color;
-    if (!constructColor(solidColorStr, solidOpacityStr, color, handler))
+    QSvgCssColor css;
+    if (!constructColor(solidColorStr, solidOpacityStr, color, handler, &css))
         return 0;
     QSvgSolidColorStyle *style = new QSvgSolidColorStyle(color);
+    style->setCssColor(css, solidColorStr.trimmed().toString());
     return style;
 }
 
@@ -3074,16 +3034,18 @@ static bool parseStopNode(QSvgStyleProperty *parent,
         static_cast<QSvgGradientStyle*>(parent);
     QStringView colorStr    = attrs.stopColor;
     QColor color;
+    QSvgCssColor css;
 
     bool ok = true;
     qreal offset = convertToNumber(attrs.offset, &ok);
     if (!ok)
         offset = 0.0;
 
-    if (!constructColor(colorStr, attrs.stopOpacity, color, handler)) {
+    if (!constructColor(colorStr, attrs.stopOpacity, color, handler, &css)) {
         color = Qt::black;
         if (!attrs.stopOpacity.isEmpty())
             setAlpha(attrs.stopOpacity, &color);
+        css = QSvgCssColor::fromQColor(color);
     }
 
     QGradient *grad = gradientStyle->qgradient();
@@ -3107,6 +3069,7 @@ static bool parseStopNode(QSvgStyleProperty *parent,
     }
 
     grad->setColorAt(offset, color);
+    gradientStyle->appendCssStop(css);
     gradientStyle->setGradientStopsSet(true);
     return true;
 }
@@ -4177,6 +4140,11 @@ void QSvgHandler::setDefaultCoordinateSystem(QSvgUtils::LengthType type)
 
 void QSvgHandler::pushColor(const QColor &color)
 {
+    pushColor(QSvgCssColor::fromQColor(color));
+}
+
+void QSvgHandler::pushColor(const QSvgCssColor &color)
+{
     m_colorStack.push(color);
     m_colorTagCount.push(1);
 }
@@ -4201,10 +4169,15 @@ void QSvgHandler::popColor()
 
 QColor QSvgHandler::currentColor() const
 {
+    return currentCssColor().toQColor();
+}
+
+QSvgCssColor QSvgHandler::currentCssColor() const
+{
     if (!m_colorStack.isEmpty())
         return m_colorStack.top();
     else
-        return QColor(0, 0, 0);
+        return QSvgCssColor(QSvgCssColor::Srgb, 0, 0, 0);
 }
 
 void QSvgHandler::pushUnresolvedStyle(QSvgStyleProperty *prop)

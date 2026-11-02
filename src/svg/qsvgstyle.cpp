@@ -4,6 +4,7 @@
 
 
 #include "qsvgstyle_p.h"
+#include "qsvghandler_p.h"
 
 #include "qsvgfont_p.h"
 #include "qsvgnode_p.h"
@@ -125,6 +126,7 @@ void QSvgFillStyle::setFillOpacity(qreal opacity)
 void QSvgFillStyle::setFillStyle(QSvgPaintStyleProperty* style)
 {
     m_style.reset(style);
+    m_cssFill = QSvgCssPaint();
     m_fillSet = 1;
 }
 
@@ -132,7 +134,14 @@ void QSvgFillStyle::setBrush(QBrush brush)
 {
     m_fill = std::move(brush);
     m_style.reset();
+    m_cssFill = QSvgCssPaint();
     m_fillSet = 1;
+}
+
+void QSvgFillStyle::setCssColor(const QSvgCssColor &color, const QString &text)
+{
+    setBrush(QBrush(color.toQColor()));
+    m_cssFill.setColor(color, text);
 }
 
 void QSvgFillStyle::apply(QPainter *p, const QSvgNode *n, QSvgExtraStates &states)
@@ -146,6 +155,8 @@ void QSvgFillStyle::apply(QPainter *p, const QSvgNode *n, QSvgExtraStates &state
     if (m_fillSet) {
         if (m_style)
             p->setBrush(m_style->brush(p, n, states));
+        else if (m_cssFill.isValid())
+            p->setBrush(m_cssFill.brush(p));
         else
             p->setBrush(m_fill);
     }
@@ -310,6 +321,8 @@ void QSvgStrokeStyle::apply(QPainter *p, const QSvgNode *n, QSvgExtraStates &sta
     if (m_strokeSet) {
         if (m_style)
             pen.setBrush(m_style->brush(p, n, states));
+        else if (m_cssStroke.isValid())
+            pen.setBrush(m_cssStroke.brush(p));
         else
             pen.setBrush(m_stroke.brush());
     }
@@ -413,7 +426,7 @@ QSvgGradientStyle::~QSvgGradientStyle()
     delete m_gradient;
 }
 
-QBrush QSvgGradientStyle::brush(QPainter *, const QSvgNode *, QSvgExtraStates &)
+QBrush QSvgGradientStyle::brush(QPainter *p, const QSvgNode *, QSvgExtraStates &)
 {
     if (!m_link.isEmpty()) {
         resolveStops();
@@ -423,6 +436,27 @@ QBrush QSvgGradientStyle::brush(QPainter *, const QSvgNode *, QSvgExtraStates &)
     if (!m_gradientStopsSet) {
         m_gradient->setStops(QGradientStops() << QGradientStop(0.0, QColor(0, 0, 0, 0)));
         m_gradientStopsSet = true;
+        m_cssStops.clear();
+    }
+
+    if (p && !m_cssStops.isEmpty() && m_cssStops.size() == m_gradient->stops().size()) {
+        const QSvgCssColorTarget target = QSvgCssColorTarget::forPainter(p);
+        if (!m_cssCached || target != m_cssTarget) {
+            bool mapped = false;
+            m_cssGradient = *m_gradient;
+            m_cssGradient.setStops(qsvg_gradientStops(m_gradient->stops(), m_cssStops, target, &mapped));
+            if (mapped) {
+                qCWarning(lcSvgHandler, "A gradient stop colour is outside the gamut of the target (%s) or of the "
+                          "range QPainter's gradients hold, [0, 1]; it is drawn gamut mapped, as CSS Color 4 section "
+                          "14.2 says", QSvgCssColor::name(target.space));
+            }
+            m_cssTarget = target;
+            m_cssCached = true;
+        }
+        QBrush b(m_cssGradient);
+        if (!m_transform.isIdentity())
+            b.setTransform(m_transform);
+        return b;
     }
 
     QBrush b(*m_gradient);
@@ -610,6 +644,7 @@ void QSvgGradientStyle::resolveStops_helper(QStringList *visited)
                 st->resolveStops_helper(visited);
                 m_gradient->setStops(st->qgradient()->stops());
                 m_gradientStopsSet = st->gradientStopsSet();
+                setCssStops(st->cssStops());
             }
         } else {
             qWarning("Could not resolve property : %s", qPrintable(m_link));

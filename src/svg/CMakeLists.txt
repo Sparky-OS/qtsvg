@@ -18,6 +18,7 @@ qt_internal_add_module(Svg
         qsvggenerator.cpp qsvggenerator.h
         qsvggraphics.cpp qsvggraphics_p.h
         qsvghandler.cpp qsvghandler_p.h
+        qsvgcsscolor.cpp qsvgcsscolor_p.h
         qsvgnode.cpp qsvgnode_p.h
         qsvgrenderer.cpp qsvgrenderer.h
         qsvgstructure.cpp qsvgstructure_p.h
