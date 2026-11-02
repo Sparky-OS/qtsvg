@@ -5,6 +5,7 @@
 #include "qsvgpaintserver_p.h"
 #include <QtSvg/private/qsvgnode_p.h>
 #include <QtSvg/private/qsvgdocument_p.h>
+#include <QtSvg/private/qsvghandler_p.h>
 
 QT_BEGIN_NAMESPACE
 
@@ -27,7 +28,7 @@ QSvgGradientPaint::QSvgGradientPaint(std::unique_ptr<QGradient> grad)
 QSvgGradientPaint::~QSvgGradientPaint()
     = default;
 
-QBrush QSvgGradientPaint::brush(QPainter *, const QSvgNode *, QSvgExtraStates &)
+QBrush QSvgGradientPaint::brush(QPainter *p, const QSvgNode *, QSvgExtraStates &)
 {
     if (!m_link.isEmpty())
         resolveStops();
@@ -36,6 +37,27 @@ QBrush QSvgGradientPaint::brush(QPainter *, const QSvgNode *, QSvgExtraStates &)
     if (!m_gradientStopsSet) {
         m_gradient->setStops(QGradientStops() << QGradientStop(0.0, QColor(0, 0, 0, 0)));
         m_gradientStopsSet = true;
+        m_cssStops.clear();
+    }
+
+    if (p && !m_cssStops.isEmpty() && m_cssStops.size() == m_gradient->stops().size()) {
+        const QSvgCssColorTarget target = QSvgCssColorTarget::forPainter(p);
+        if (!m_cssCached || target != m_cssTarget) {
+            bool mapped = false;
+            m_cssGradient = *m_gradient;
+            m_cssGradient.setStops(qsvg_gradientStops(m_gradient->stops(), m_cssStops, target, &mapped));
+            if (mapped) {
+                qCWarning(lcSvgHandler, "A gradient stop color is outside the gamut of the target (%s) or of the "
+                          "range QPainter's gradients hold, [0, 1]; it is drawn gamut mapped, as CSS Color 4 section "
+                          "14.2 says", QSvgCssColor::name(target.space));
+            }
+            m_cssTarget = target;
+            m_cssCached = true;
+        }
+        QBrush b(m_cssGradient);
+        if (!m_transform.isIdentity())
+            b.setTransform(m_transform);
+        return b;
     }
 
     QBrush b(*m_gradient);
@@ -64,6 +86,7 @@ void QSvgGradientPaint::resolveStops_helper(QSet<QString> &visited)
                 st->resolveStops_helper(visited);
                 m_gradient->setStops(st->qgradient()->stops());
                 m_gradientStopsSet = st->gradientStopsSet();
+                setCssStops(st->cssStops());
             }
         } else {
             qWarning("Could not resolve property : %s", qPrintable(m_link));

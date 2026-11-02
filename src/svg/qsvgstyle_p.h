@@ -27,6 +27,7 @@
 #include <qdebug.h>
 #include "qtsvgglobal_p.h"
 #include <QtSvg/private/qsvgpaintserver_p.h>
+#include <QtSvg/private/qsvgcsscolor_p.h>
 #include <memory>
 #include <array>
 
@@ -166,6 +167,8 @@ public:
     void setFillOpacity(qreal opacity);
     void setPaintServer(QSvgPaintServerSharedPtr paintServer);
     void setBrush(QBrush brush);
+    // a CSS color, resolved for each painter's target when it is applied
+    void setCssColor(const QSvgCssColor &color, const QString &text);
 
     const QBrush & qbrush() const
     {
@@ -214,6 +217,8 @@ private:
     uint m_fillRuleSet : 1;
     uint m_fillOpacitySet : 1;
     uint m_fillSet : 1;
+
+    QSvgCssPaint m_cssFill;
 };
 
 class Q_SVG_EXPORT QSvgViewportFillStyle : public QSvgStyleProperty
@@ -326,12 +331,21 @@ public:
     {
         m_stroke.setBrush(brush);
         m_paintServer.reset();
+        m_cssStroke = QSvgCssPaint();
         m_strokeSet = 1;
+    }
+
+    // a CSS color, resolved for each painter's target when it is applied
+    void setCssColor(const QSvgCssColor &color, const QString &text)
+    {
+        setStroke(QBrush(color.toQColor()));
+        m_cssStroke.setColor(color, text);
     }
 
     void setPaintServer(QSvgPaintServerSharedPtr paintServer)
     {
         m_paintServer = std::move(paintServer);
+        m_cssStroke = QSvgCssPaint();
         m_strokeSet = 1;
     }
 
@@ -441,6 +455,8 @@ private:
     uint m_strokeOpacitySet : 1;
     uint m_strokeWidthSet : 1;
     uint m_vectorEffectSet : 1;
+
+    QSvgCssPaint m_cssStroke;
 };
 
 class Q_SVG_EXPORT QSvgTransformStyle : public QSvgStyleProperty

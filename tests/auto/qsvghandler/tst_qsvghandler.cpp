@@ -215,8 +215,13 @@ void tst_QSvgHandler::testResolveColor_data()
 
     QTest::newRow("rgb-numbers") << "rgb(1,2,3)" << true << QColor{ 1, 2, 3 };
     QTest::newRow("rgb-numbers-invalid") << "rgb(1,x,3)" << false << QColor();
-    QTest::newRow("rgb-numbers-too-large") << "rgb(1,256,3)" << false << QColor();
-    QTest::newRow("rgb-numbers-illegal-float") << "rgb(1,2.4,3)" << false << QColor();
+    // CSS Color 4 section 5.1: values outside 0 to 255 are clamped at parsed-value time, and the legacy syntax takes
+    // <number>s, kept at the precision authored
+    QTest::newRow("rgb-numbers-too-large") << "rgb(1,256,3)" << true << QColor{ 1, 255, 3 };
+    QTest::newRow("rgb-numbers-float") << "rgb(1,2.4,3)" << true << QColor::fromRgba64(257, 617, 771);
+    QTest::newRow("rgb-modern") << "rgb(1 2 3 / 50%)" << true << QColor::fromRgba64(257, 514, 771, 32768);
+    QTest::newRow("color-function") << "color(srgb 0.5 0.25 1)" << true << QColor::fromRgba64(32768, 16384, 65535);
+    QTest::newRow("unknown-space") << "color(profoto-rgb 0.5 0.25 1)" << false << QColor();
 }
 
 void tst_QSvgHandler::testResolveColor()
@@ -227,8 +232,8 @@ void tst_QSvgHandler::testResolveColor()
 
     QSvgHandler handler(QByteArray(), QtSvg::Option::NoOption, QtSvg::AnimatorType::Automatic);
     QColor actualColor;
-    QEXPECT_FAIL("rgb-numbers-too-large", "accepted too large value", Continue);
-    QEXPECT_FAIL("rgb-numbers-illegal-float", "accepted float where it's not allowed", Continue);
+    if (!returnVal)
+        QTest::ignoreMessage(QtWarningMsg, QRegularExpression(QStringLiteral("Invalid color")));
     QCOMPARE(resolveColor(colorStr, actualColor, &handler), returnVal);
     if (returnVal)
         QCOMPARE(actualColor, expectedColor);

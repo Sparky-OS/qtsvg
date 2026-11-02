@@ -30,6 +30,8 @@
 #include "qtransform.h"
 #include "qvarlengtharray.h"
 #include "qimagereader.h"
+#include <QtGui/qguiapplication.h>
+#include <QtGui/qstylehints.h>
 
 #include "float.h"
 
@@ -409,35 +411,6 @@ QList<qreal> parseNumbersList(QStringView *str)
     return points;
 }
 
-static QList<qreal> parsePercentageList(QStringView str)
-{
-    QList<qreal> points;
-
-    while (!str.isEmpty() && str.first().isSpace())
-        str.slice(1);
-    while ((!str.isEmpty() && str.first() >= QLatin1Char('0') && str.first() <= QLatin1Char('9'))
-           || str.startsWith(QLatin1Char('-')) || str.startsWith(QLatin1Char('+'))
-           || str.startsWith(QLatin1Char('.'))) {
-
-        points.append(QGuiSvg::toDouble(&str));
-
-        while (!str.isEmpty() && str.first().isSpace())
-            str.slice(1);
-        if (str.startsWith(QLatin1Char('%')))
-            str.slice(1);
-        while (!str.isEmpty() && str.first().isSpace())
-            str.slice(1);
-        if (str.startsWith(QLatin1Char(',')))
-            str.slice(1);
-
-        //eat the rest of space
-        while (!str.isEmpty() && str.first().isSpace())
-            str.slice(1);
-    }
-
-    return points;
-}
-
 /**
  *  The form is <IRI>. This function parses local
  *  IRI references, i.e, resources referenced within
@@ -479,69 +452,52 @@ static QStringView idFromFuncIRI(QStringView iri)
 /**
  * returns true when successfully set the color. false signifies
  * that the color should be inherited
+ *
+ * The value is a CSS <color> (CSS Color 4, CSS Color 5, CSS Color HDR 1); css, when given, receives it at full
+ * precision in its own color space, for the styles to resolve it for the painter's target.
  */
-bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler)
+bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler, QSvgCssColor *css)
 {
-    QStringView colorStrTr = colorStr.trimmed();
-    if (colorStrTr.isEmpty())
+    const QStringView text = colorStr.trimmed();
+    if (text.isEmpty() || text == tokens::inherit)
         return false;
 
-    switch(colorStrTr.at(0).unicode()) {
-
-        case '#':
-            {
-                // #rrggbb is very very common, so let's tackle it here
-                // rather than falling back to QColor
-                QRgb rgb;
-                bool ok = qsvg_get_hex_rgb(colorStrTr.constData(), colorStrTr.size(), &rgb);
-                if (ok)
-                    color.setRgb(rgb);
-                return ok;
-            }
-            break;
-
-        case 'r':
-            {
-                // starts with "rgb(", ends with ")" and consists of at least 7 characters "rgb(,,)"
-                if (colorStrTr.size() >= 7 && colorStrTr.at(colorStrTr.size() - 1) == QLatin1Char(')')
-                    && colorStrTr.mid(0, 4) == QLatin1String("rgb(")) {
-                    QStringView sv{ colorStrTr.sliced(4) };
-                    QList<qreal> compo = parseNumbersList(&sv);
-                    //1 means that it failed after reaching non-parsable
-                    //character which is going to be "%"
-                    if (compo.size() == 1) {
-                        compo = parsePercentageList(colorStrTr.sliced(4));
-                        for (int i = 0; i < compo.size(); ++i)
-                            compo[i] *= (qreal)2.55;
-                    }
-
-                    if (compo.size() == 3) {
-                        color = QColor(int(compo[0]),
-                                       int(compo[1]),
-                                       int(compo[2]));
-                        return true;
-                    }
-                    return false;
-                }
-            }
-            break;
-
-        case 'c':
-            if (colorStrTr == QLatin1String("currentColor")) {
-                color = handler->currentColor();
-                return true;
-            }
-            break;
-        case 'i':
-            if (colorStrTr == tokens::inherit)
-                return false;
-            break;
-        default:
-            break;
+    QSvgCssColorContext context;
+    context.currentColor = handler->currentCssColor();
+    // system colors and light-dark() follow the element color scheme (CSS Color Adjustment 1 section 2.4)
+    context.colorScheme = handler->elementColorScheme();
+    const QSvgCssColorParseResult result = qsvg_parseCssColor(text, context);
+    if (!result.note.isEmpty())
+        handler->noteSystemColors(context.colorScheme, result.note);
+    if (result.color.isValid()) {
+        color = result.color.toQColor();
+        if (css)
+            *css = result.color;
+        return true;
     }
 
-    color = QColor::fromString(colorStrTr);
-    return color.isValid();
+    // Qt SVG has always read #RRRGGGBBB and #RRRRGGGGBBBB, which CSS does not define: still read, and said
+    QRgb rgb;
+    if (text.startsWith(u'#') && (text.size() == 10 || text.size() == 13)
+        && qsvg_get_hex_rgb(text.constData(), int(text.size()), &rgb)) {
+        qCWarning(lcSvgHandler, "\"%s\" is not a CSS color (CSS Color 4 section 5.2 defines 3, 4, 6 and 8 hex "
+                  "digits); it is read as Qt SVG has always read it", qPrintable(text.toString()));
+        color.setRgb(rgb);
+        if (css)
+            *css = QSvgCssColor::fromQColor(color);
+        return true;
+    }
+
+    // CSS Color 4 section 4.5: an invalid color makes its declaration invalid, so the property keeps its
+    // inherited or initial value; say so, rather than draw that value without a word
+    qCWarning(lcSvgHandler, "Invalid color \"%s\": %s; the declaration is ignored", qPrintable(text.toString()),
+              qPrintable(result.error));
+    return false;
+}
+
+bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler)
+{
+    return resolveColor(colorStr, color, handler, nullptr);
 }
 
 void setAlpha(QStringView opacity, QColor *color)
@@ -554,12 +510,15 @@ void setAlpha(QStringView opacity, QColor *color)
 }
 
 static bool constructColor(QStringView colorStr, QStringView opacity,
-                           QColor &color, QSvgHandler *handler)
+                           QColor &color, QSvgHandler *handler, QSvgCssColor *css = nullptr)
 {
-    if (!resolveColor(colorStr, color, handler))
+    if (!resolveColor(colorStr, color, handler, css))
         return false;
-    if (!opacity.isEmpty())
+    if (!opacity.isEmpty()) {
         setAlpha(opacity, &color);
+        if (css)
+            css->setAlpha(color.alphaF());
+    }
     return true;
 }
 
@@ -599,14 +558,38 @@ static bool createSvgGlyph(QSvgFont *font, const QXmlStreamAttributes &attribute
     return true;
 }
 
+// CSS Color Adjustment 1 section 2.2: color-scheme, from style sheets and style attributes only; SVG 2 section 6.6
+// defines no presentation attribute for it, and other attributes "must not be parsed as a presentation attribute"
+static void parseColorScheme(const QXmlStreamAttributes &cssAttributes, QSvgHandler *handler)
+{
+    QStringView text;
+    for (const QXmlStreamAttribute &attribute : cssAttributes) {
+        if (attribute.qualifiedName().compare("color-scheme"_L1, Qt::CaseInsensitive) == 0)
+            text = attribute.value();   // the last declaration wins
+    }
+    if (text.isNull())
+        return;
+    QSvgCssColorSchemeValue value;
+    bool keepsParent = false;
+    QString error;
+    if (!qsvg_parseColorScheme(text, &value, &keepsParent, &error)) {
+        qCWarning(lcSvgHandler, "Invalid color-scheme \"%s\": %s; the declaration is ignored",
+                  qPrintable(text.toString()), qPrintable(error));
+        return;
+    }
+    if (!keepsParent)
+        handler->setColorScheme(value);
+}
+
 static void parseColor(QSvgNode *,
                        const QSvgAttributes &attributes,
                        QSvgHandler *handler)
 {
     QColor color;
-    if (constructColor(attributes.color, attributes.colorOpacity, color, handler)) {
+    QSvgCssColor css;
+    if (constructColor(attributes.color, attributes.colorOpacity, color, handler, &css)) {
         handler->popColor();
-        handler->pushColor(color);
+        handler->pushColor(css);
     }
 }
 
@@ -650,8 +633,9 @@ static void parseBrush(QSvgNode *node,
                 }
             } else if (attributes.fill != QLatin1String("none")) {
                 QColor color;
-                if (resolveColor(attributes.fill, color, handler))
-                    prop->setBrush(QBrush(color));
+                QSvgCssColor css;
+                if (resolveColor(attributes.fill, color, handler, &css))
+                    prop->setCssColor(css, attributes.fill.trimmed().toString());
             } else {
                 prop->setBrush(QBrush(Qt::NoBrush));
             }
@@ -813,8 +797,9 @@ static void parsePen(QSvgNode *node,
                 }
             } else if (attributes.stroke != QLatin1String("none")) {
                 QColor color;
-                if (resolveColor(attributes.stroke, color, handler))
-                    prop->setStroke(QBrush(color));
+                QSvgCssColor css;
+                if (resolveColor(attributes.stroke, color, handler, &css))
+                    prop->setCssColor(css, attributes.stroke.trimmed().toString());
             } else {
                 prop->setStroke(QBrush(Qt::NoBrush));
             }
@@ -1484,6 +1469,7 @@ static bool parseStyle(QSvgNode *node,
     if (!style.isEmpty())
         handler->cssHandler().parseCSStoXMLAttrs(style.toString(), cssAttributes);
     svgAttributes.setAttributes(cssAttributes, handler);
+    parseColorScheme(cssAttributes, handler);
 
     QSvgCssProperties cssProperties(cssAttributes);
     parseOffsetPath(node, cssProperties);
@@ -2034,9 +2020,10 @@ static void parseBaseGradient(const QXmlStreamAttributes &attributes,
     const QStringView colorOpacityStr  = attributes.value(QLatin1String("color-opacity"));
 
     QColor color;
-    if (constructColor(colorStr, colorOpacityStr, color, handler)) {
+    QSvgCssColor css;
+    if (constructColor(colorStr, colorOpacityStr, color, handler, &css)) {
         handler->popColor();
-        handler->pushColor(color);
+        handler->pushColor(css);
     }
 
     QTransform matrix;
@@ -2053,6 +2040,7 @@ static void parseBaseGradient(const QXmlStreamAttributes &attributes,
             } else {
                 grad->setStops(inherited->qgradient()->stops());
                 gradProp->setGradientStopsSet(inherited->gradientStopsSet());
+                gradProp->setCssStops(inherited->cssStops());
             }
 
             matrix = inherited->qtransform();
@@ -2982,9 +2970,11 @@ static QSvgPaintServerSharedPtr createSolidColorNode(const QXmlStreamAttributes 
         solidOpacityStr = attributes.value(QLatin1String("opacity"));
 
     QColor color;
-    if (!constructColor(solidColorStr, solidOpacityStr, color, handler))
+    QSvgCssColor css;
+    if (!constructColor(solidColorStr, solidOpacityStr, color, handler, &css))
         return 0;
     std::shared_ptr<QSvgSolidColorPaint> paintServer = std::make_shared<QSvgSolidColorPaint>(color);
+    paintServer->setCssColor(css, solidColorStr.trimmed().toString());
     return paintServer;
 }
 
@@ -3011,12 +3001,14 @@ static bool parseStopNode(QSvgPaintServer *paintServer,
     QXmlStreamAttributes cssAttributes;
     handler->cssHandler().styleLookup(&dummy, cssAttributes);
     attrs.setAttributes(cssAttributes, handler);
+    parseColorScheme(cssAttributes, handler);
 
     QXmlStreamAttributes styleCssAttributes;
     QStringView style = attributes.value(QLatin1String("style"));
     if (!style.isEmpty())
         handler->cssHandler().parseCSStoXMLAttrs(style.toString(), styleCssAttributes);
     attrs.setAttributes(styleCssAttributes, handler);
+    parseColorScheme(styleCssAttributes, handler);
 #endif
 
     //TODO: Handle style parsing for gradients stop like the rest of the nodes.
@@ -3025,6 +3017,7 @@ static bool parseStopNode(QSvgPaintServer *paintServer,
     QSvgGradientPaint *gradientStyle = static_cast<QSvgGradientPaint*>(paintServer);
     QStringView colorStr    = attrs.stopColor;
     QColor color;
+    QSvgCssColor css;
 
     bool ok = true;
     qreal offset = convertToNumber(attrs.offset,
@@ -3032,10 +3025,11 @@ static bool parseStopNode(QSvgPaintServer *paintServer,
     if (!ok)
         offset = 0.0;
 
-    if (!constructColor(colorStr, attrs.stopOpacity, color, handler)) {
+    if (!constructColor(colorStr, attrs.stopOpacity, color, handler, &css)) {
         color = Qt::black;
         if (!attrs.stopOpacity.isEmpty())
             setAlpha(attrs.stopOpacity, &color);
+        css = QSvgCssColor::fromQColor(color);
     }
 
     QGradient *grad = gradientStyle->qgradient();
@@ -3059,6 +3053,7 @@ static bool parseStopNode(QSvgPaintServer *paintServer,
     }
 
     grad->setColorAt(offset, color);
+    gradientStyle->appendCssStop(css);
     gradientStyle->setGradientStopsSet(true);
     return true;
 }
@@ -3648,6 +3643,7 @@ void QSvgHandler::init()
 {
     m_defaultPen = QPen(Qt::black, 1, Qt::SolidLine, Qt::FlatCap, Qt::SvgMiterJoin);
     m_defaultPen.setMiterLimit(4);
+    m_colorSchemePreference = qsvg_preferredColorScheme();
     parse();
 }
 
@@ -3819,6 +3815,7 @@ bool QSvgHandler::startElement(const QString localName, const QXmlStreamAttribut
     QSvgNode *node = nullptr;
 
     pushColorCopy();
+    m_colorSchemeStack.push(m_colorSchemeStack.isEmpty() ? QSvgCssColorSchemeValue() : m_colorSchemeStack.top());
 
     /* The xml:space attribute may appear on any element. We do
      * a lookup by the qualified name here, but this is namespace aware, since
@@ -4037,6 +4034,8 @@ bool QSvgHandler::endElement(const QStringView localName)
     m_whitespaceMode.pop();
 
     popColor();
+    if (!m_colorSchemeStack.isEmpty())
+        m_colorSchemeStack.pop();
 
     if (node == Unknown)
         return false;
@@ -4172,6 +4171,11 @@ void QSvgHandler::setDefaultCoordinateSystem(QGuiSvg::LengthType type)
 
 void QSvgHandler::pushColor(const QColor &color)
 {
+    pushColor(QSvgCssColor::fromQColor(color));
+}
+
+void QSvgHandler::pushColor(const QSvgCssColor &color)
+{
     m_colorStack.push(color);
     m_colorTagCount.push(1);
 }
@@ -4196,10 +4200,40 @@ void QSvgHandler::popColor()
 
 QColor QSvgHandler::currentColor() const
 {
+    return currentCssColor().toQColor();
+}
+
+void QSvgHandler::setColorScheme(const QSvgCssColorSchemeValue &value)
+{
+    if (m_colorSchemeStack.isEmpty())
+        m_colorSchemeStack.push(value);
+    else
+        m_colorSchemeStack.top() = value;
+}
+
+QSvgCssColorScheme QSvgHandler::elementColorScheme() const
+{
+    // normal: the page color scheme, the used color scheme of the page's supported color schemes; SVG has no way
+    // to set them, so that is a null support, and the default, light (CSS Color Adjustment 1 sections 2.1 to 2.3)
+    return qsvg_usedColorScheme(m_colorSchemeStack.isEmpty() ? QSvgCssColorSchemeValue() : m_colorSchemeStack.top(),
+                                m_colorSchemePreference);
+}
+
+void QSvgHandler::noteSystemColors(QSvgCssColorScheme scheme, const QString &note)
+{
+    bool &said = m_systemColorsNoted[scheme == QSvgCssColorScheme::Dark ? 1 : 0];
+    if (!said) {
+        qCWarning(lcSvgHandler, "%s", qPrintable(note));
+        said = true;
+    }
+}
+
+QSvgCssColor QSvgHandler::currentCssColor() const
+{
     if (!m_colorStack.isEmpty())
         return m_colorStack.top();
     else
-        return QColor(0, 0, 0);
+        return QSvgCssColor(QSvgCssColor::Srgb, 0, 0, 0);
 }
 
 void QSvgHandler::pushUnresolvedStyle(QSvgStyleProperty *prop)

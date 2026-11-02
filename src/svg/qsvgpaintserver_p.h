@@ -19,6 +19,7 @@
 
 #include <memory>
 #include <QtSvg/private/qtsvgglobal_p.h>
+#include <QtSvg/private/qsvgcsscolor_p.h>
 #include <QtCore/qrect.h>
 #include <QtCore/qset.h>
 #include <QtCore/qstring.h>
@@ -62,6 +63,9 @@ public:
 
     QBrush brush(QPainter *, const QSvgNode *, QSvgExtraStates &) override;
 
+    // a CSS color, resolved for each painter's target
+    void setCssColor(const QSvgCssColor &color, const QString &text);
+
 private:
     // solid-color       v 	x 	'inherit' | <SVGColor.datatype>
     // solid-opacity     v 	x 	'inherit' | <OpacityValue.datatype>
@@ -69,6 +73,8 @@ private:
 
     QBrush m_oldFill;
     QPen m_oldStroke;
+
+    QSvgCssPaint m_css;
 };
 
 inline QSvgPaintServer::Type QSvgSolidColorPaint::type() const
@@ -81,9 +87,16 @@ inline const QColor &QSvgSolidColorPaint::qcolor() const
     return m_solidColor;
 }
 
-inline QBrush QSvgSolidColorPaint::brush(QPainter *, const QSvgNode *, QSvgExtraStates &)
+inline QBrush QSvgSolidColorPaint::brush(QPainter *p, const QSvgNode *, QSvgExtraStates &)
 {
+    if (m_css.isValid())
+        return m_css.brush(p);
     return m_solidColor;
+}
+
+inline void QSvgSolidColorPaint::setCssColor(const QSvgCssColor &color, const QString &text)
+{
+    m_css.setColor(color, text);
 }
 
 
@@ -107,6 +120,11 @@ public:
     void setGradientStopsSet(bool set);
 
     QBrush brush(QPainter *, const QSvgNode *, QSvgExtraStates &) override;
+
+    // the CSS colors of the stops, in the order of qgradient()->stops(); resolved for each painter's target
+    void appendCssStop(const QSvgCssColor &color);
+    void setCssStops(const QList<QSvgCssColor> &stops);
+    const QList<QSvgCssColor> &cssStops() const;
 private:
     void resolveStops();
     void resolveStops_helper(QSet<QString> &visited);
@@ -117,7 +135,29 @@ private:
     QSvgDocument *m_doc{nullptr};
     QString m_link;
     bool m_gradientStopsSet{false};
+
+    QList<QSvgCssColor> m_cssStops;
+    QGradient m_cssGradient;
+    QSvgCssColorTarget m_cssTarget;
+    bool m_cssCached{false};
 };
+
+inline void QSvgGradientPaint::appendCssStop(const QSvgCssColor &color)
+{
+    m_cssStops.append(color);
+    m_cssCached = false;
+}
+
+inline void QSvgGradientPaint::setCssStops(const QList<QSvgCssColor> &stops)
+{
+    m_cssStops = stops;
+    m_cssCached = false;
+}
+
+inline const QList<QSvgCssColor> &QSvgGradientPaint::cssStops() const
+{
+    return m_cssStops;
+}
 
 inline QSvgPaintServer::Type QSvgGradientPaint::type() const
 {

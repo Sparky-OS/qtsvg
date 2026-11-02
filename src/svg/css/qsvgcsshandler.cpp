@@ -3,6 +3,8 @@
 // Qt-Security score:critical reason:data-parser
 
 #include "qsvgcsshandler_p.h"
+#include <QtSvg/private/qsvgcsscolor_p.h>
+#include <QtSvg/private/qsvghandler_p.h>
 #include <QtSvg/private/qsvgstyleselector_p.h>
 #include <QtSvg/private/qsvganimatedproperty_p.h>
 #include <QtGui/private/qmath_p.h>
@@ -57,7 +59,10 @@ bool fillColorProperty(const QList<CssKeyFrameValue> &keyFrames, QSvgAnimatedPro
             return false;
 
         QString colorStr = keyFrame.values.first().toString();
-        QColor color = QColor::fromString(colorStr);
+        const QSvgCssColorParseResult parsed = qsvg_parseCssColor(colorStr, QSvgCssColorContext());
+        QColor color = parsed.color.isValid() ? parsed.color.toQColor() : QColor::fromString(colorStr);
+        if (!color.isValid())
+            qCWarning(lcSvgHandler, "Invalid color \"%s\" in a CSS key frame: %s", qPrintable(colorStr), qPrintable(parsed.error));
         prop->appendColor(color);
         prop->appendKeyFrame(keyFrame.keyFrame);
     }

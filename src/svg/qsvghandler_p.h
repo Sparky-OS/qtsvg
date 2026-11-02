@@ -22,6 +22,7 @@
 #include "QtCore/qstringview.h"
 #include <QtCore/QLoggingCategory>
 #include "qsvgstyle_p.h"
+#include "qsvgcsscolor_p.h"
 #if QT_CONFIG(cssparser)
 #include <QtSvg/private/qsvgcsshandler_p.h>
 #include <QtSvg/private/qsvgcssproperties_p.h>
@@ -45,6 +46,7 @@ class QColor;
 
 Q_AUTOTEST_EXPORT QList<qreal> parseNumbersList(QStringView *str);
 Q_AUTOTEST_EXPORT bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler);
+Q_AUTOTEST_EXPORT bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handler, QSvgCssColor *css);
 
 class Q_SVG_EXPORT QSvgHandler
 {
@@ -73,9 +75,18 @@ public:
     QGuiSvg::LengthType defaultCoordinateSystem() const;
 
     void pushColor(const QColor &color);
+    void pushColor(const QSvgCssColor &color);
     void pushColorCopy();
     void popColor();
     QColor currentColor() const;
+    QSvgCssColor currentCssColor() const;
+
+    // the computed value of color-scheme (CSS Color Adjustment 1 section 2.2), inherited from element to element
+    void setColorScheme(const QSvgCssColorSchemeValue &value);
+    // the element color scheme that system colors and light-dark() follow (CSS Color Adjustment 1 section 2.4)
+    QSvgCssColorScheme elementColorScheme() const;
+    // says once per document and color scheme that system colors came from Qt's default palette
+    void noteSystemColors(QSvgCssColorScheme scheme, const QString &note);
 
     void pushUnresolvedStyle(QSvgStyleProperty *prop);
 
@@ -151,7 +162,7 @@ private:
 
     QGuiSvg::LengthType m_defaultCoords{QGuiSvg::LT_PX};
 
-    QStack<QColor> m_colorStack;
+    QStack<QSvgCssColor> m_colorStack;
     QStack<int>    m_colorTagCount;
 
     int m_animEnd{0};
@@ -168,6 +179,10 @@ private:
     QPen m_defaultPen;
     const QtSvg::Options m_options;
     const QtSvg::AnimatorType m_animatorType;
+
+    QStack<QSvgCssColorSchemeValue> m_colorSchemeStack;
+    QSvgCssColorSchemePreference m_colorSchemePreference = QSvgCssColorSchemePreference::None;
+    bool m_systemColorsNoted[2] = {false, false};
 };
 
 Q_AUTOTEST_EXPORT QSvgNode *createAnimateTransformNode(QSvgNode *parent,

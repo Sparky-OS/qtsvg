@@ -99,6 +99,7 @@ void QSvgFillStyle::setFillOpacity(qreal opacity)
 void QSvgFillStyle::setPaintServer(QSvgPaintServerSharedPtr paintServer)
 {
     m_paintServer = std::move(paintServer);
+    m_cssFill = QSvgCssPaint();
     m_fillSet = 1;
 }
 
@@ -106,7 +107,14 @@ void QSvgFillStyle::setBrush(QBrush brush)
 {
     m_fill = std::move(brush);
     m_paintServer.reset();
+    m_cssFill = QSvgCssPaint();
     m_fillSet = 1;
+}
+
+void QSvgFillStyle::setCssColor(const QSvgCssColor &color, const QString &text)
+{
+    setBrush(QBrush(color.toQColor()));
+    m_cssFill.setColor(color, text);
 }
 
 void QSvgFillStyle::apply(QPainter *p, const QSvgNode *n, QSvgExtraStates &states)
@@ -120,6 +128,8 @@ void QSvgFillStyle::apply(QPainter *p, const QSvgNode *n, QSvgExtraStates &state
     if (m_fillSet) {
         if (m_paintServer)
             p->setBrush(m_paintServer->brush(p, n, states));
+        else if (m_cssFill.isValid())
+            p->setBrush(m_cssFill.brush(p));
         else
             p->setBrush(m_fill);
     }
@@ -265,6 +275,8 @@ void QSvgStrokeStyle::apply(QPainter *p, const QSvgNode *n, QSvgExtraStates &sta
     if (m_strokeSet) {
         if (m_paintServer)
             pen.setBrush(m_paintServer->brush(p, n, states));
+        else if (m_cssStroke.isValid())
+            pen.setBrush(m_cssStroke.brush(p));
         else
             pen.setBrush(m_stroke.brush());
     }
