@@ -11,6 +11,7 @@
 
 #include <QtCore/qloggingcategory.h>
 #include <QtCore/qnumeric.h>
+#include <QtCore/qregularexpression.h>
 #include <QtCore/qvarlengtharray.h>
 #include <QtGui/qcolorspace.h>
 #include <QtGui/qguiapplication.h>
@@ -20,10 +21,13 @@
 #include <QtGui/qpalette.h>
 #include <QtGui/qstylehints.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
 QT_BEGIN_NAMESPACE
+
+using namespace Qt::StringLiterals;
 
 Q_DECLARE_LOGGING_CATEGORY(lcSvgHandler)
 
@@ -813,8 +817,50 @@ S rgb8(quint32 v, double alpha = 1)
     return c;
 }
 
-// CSS Color 4 section 6.2 and Appendix A: the system colours, from the application palette
-bool systemColor(const QString &name, S *out)
+// Qt's default palette for a colour scheme: the palette qt_fusionPalette() in qtbase's qplatformtheme.cpp makes for
+// a light or a dark platform, which is what Qt draws with when the platform gives no palette of its own.  Only the
+// roles the system colours read are set.
+QPalette defaultPalette(QSvgCssColorScheme scheme)
+{
+    const bool dark = scheme == QSvgCssColorScheme::Dark;
+    const QColor windowText = dark ? QColor(240, 240, 240) : QColor(Qt::black);
+    const QColor background = dark ? QColor(50, 50, 50) : QColor(239, 239, 239);
+    const QColor base = dark ? background.darker(140) : QColor(Qt::white);
+    const QColor text = dark ? windowText : QColor(Qt::black);
+    const QColor highlight(48, 140, 198);
+    QPalette pal(windowText, background, background.lighter(150), background.darker(150), background.darker(130),
+                 text, base);
+    pal.setBrush(QPalette::Button, background);
+    pal.setBrush(QPalette::HighlightedText, dark ? windowText : QColor(Qt::white));
+    pal.setBrush(QPalette::Disabled, QPalette::Text, dark ? QColor(130, 130, 130) : QColor(190, 190, 190));
+    pal.setBrush(QPalette::Active, QPalette::Highlight, highlight);
+    pal.setBrush(QPalette::Active, QPalette::Accent, highlight);
+    if (dark)
+        pal.setBrush(QPalette::Link, highlight);
+    return pal;
+}
+
+// The colour scheme of a palette: the application's, when the platform says it, otherwise what the palette looks
+// like (text lighter than its background is a dark palette).
+QSvgCssColorScheme paletteScheme(const QPalette &pal, bool applicationPalette)
+{
+    if (applicationPalette) {
+        switch (QGuiApplication::styleHints()->colorScheme()) {
+        case Qt::ColorScheme::Dark: return QSvgCssColorScheme::Dark;
+        case Qt::ColorScheme::Light: return QSvgCssColorScheme::Light;
+        default: break;
+        }
+    }
+    return pal.color(QPalette::Active, QPalette::Base).lightnessF()
+                   < pal.color(QPalette::Active, QPalette::Text).lightnessF()
+            ? QSvgCssColorScheme::Dark : QSvgCssColorScheme::Light;
+}
+
+// CSS Color 4 section 6.2 and Appendix A: the system colours, from the application palette.  They follow the element
+// colour scheme (CSS Color Adjustment 1 section 2.4, "the value of system colors"); QPalette holds one colour scheme
+// only, so when the application palette is of the other one, the colours come from Qt's default palette for the
+// element colour scheme, and *note says so.
+bool systemColor(const QString &name, QSvgCssColorScheme scheme, S *out, QString *note)
 {
     static const struct { const char *css; const char *as; } deprecated[] = {
         {"activeborder", "buttonborder"}, {"activecaption", "canvas"}, {"appworkspace", "canvas"},
@@ -846,8 +892,15 @@ bool systemColor(const QString &name, S *out)
         {"visitedtext", QPalette::Active, QPalette::LinkVisited}};
     for (const auto &r : roles) {
         if (key == QLatin1String(r.css)) {
-            const QPalette pal = qobject_cast<QGuiApplication *>(QCoreApplication::instance())
-                    ? QGuiApplication::palette() : QPalette();
+            const bool application = qobject_cast<QGuiApplication *>(QCoreApplication::instance());
+            QPalette pal = application ? QGuiApplication::palette() : QPalette();
+            if (paletteScheme(pal, application) != scheme) {
+                pal = defaultPalette(scheme);
+                *note = QStringLiteral("the system colours of the %1 colour scheme come from Qt's default palette, "
+                                       "because the application palette is %2")
+                                .arg(scheme == QSvgCssColorScheme::Dark ? u"dark" : u"light",
+                                     scheme == QSvgCssColorScheme::Dark ? u"light" : u"dark");
+            }
             *out = S::fromQColor(pal.color(r.group, r.role));
             return true;
         }
@@ -913,6 +966,7 @@ public:
     }
 
     bool usesCurrentColor = false;
+    QString note;
 
 private:
     QList<Tok> m_t;
@@ -1300,7 +1354,7 @@ private:
                 return m_ctx.currentColor;
             }
             S sys;
-            if (m_ctx.usePalette && systemColor(t.text, &sys))
+            if (m_ctx.usePalette && systemColor(t.text, m_ctx.colorScheme, &sys, &note))
                 return sys;
             fail(QStringLiteral("unknown colour %1").arg(t.text));
             return S();
@@ -1338,7 +1392,8 @@ private:
                 expect(TokKind::Comma, "','");
                 const S b = color();
                 expect(TokKind::RParen, "')'");
-                return m_ctx.darkScheme ? b : a;
+                // CSS Color 5 section 7: the first colour in a light element colour scheme, the second in a dark one
+                return m_ctx.colorScheme == QSvgCssColorScheme::Dark ? b : a;
             }
             if (f == u"contrast-color") {
                 const S c = color();
@@ -1645,16 +1700,31 @@ private:
         return c;
     }
 
-    // CSS Color 5 section 8: white or black, whichever contrasts more; white on a tie.  The algorithm is
-    // UA-defined; this one uses the WCAG 2.1 relative luminance of the gamut-mapped sRGB colour.
+    // CSS Color 5 section 8: white or black, "whichever produces maximum color contrast for text when the input
+    // color is used as a solid background", white on a tie; the algorithm is UA-defined, UAs "are advised to not
+    // simply use the WCAG 2.1 section 1.4.3 Contrast (Minimum) contrast ratio algorithm", and the result "should
+    // still meet the WCAG 2.1 section 1.4.3 Contrast (Minimum) for AA large text", 3:1.
+    // The background is the colour as an opaque sRGB colour, gamut mapped (CSS Color 4 section 14.2).  Black when its
+    // Oklab lightness is above 0.7, white otherwise: Lea Verou found that over the OKLCH reference range neither
+    // black nor white text fails APCA, a perceptual contrast algorithm, for lightness between 0.687 and 0.716 ("On
+    // automatically generating contrasting text colors with CSS", 2024).  Then, when the choice has a WCAG 2.1
+    // contrast ratio below 3:1 with the background, the other one, which always has at least 4.58:1.
     S contrastColor(const S &in)
     {
         S opaque = in;
         opaque.setAlpha(1);
         const QSvgCssTargetColor t = qsvg_resolveForTarget(opaque, QSvgCssColorTarget());
-        const Vec3 lin = linSrgb({t.rgb[0], t.rgb[1], t.rgb[2]});
-        const double lum = mul(srgbToXyz, lin)[1];
-        return (1.05 / (lum + 0.05)) >= ((lum + 0.05) / 0.05) ? rgb8(0xffffff) : rgb8(0x000000);
+        const Vec3 xyz = mul(srgbToXyz, linSrgb({t.rgb[0], t.rgb[1], t.rgb[2]}));
+        const double lum = xyz[1];
+        const double lightness = xyzToOklab(xyz)[0];
+        const double withWhite = 1.05 / (lum + 0.05);
+        const double withBlack = (lum + 0.05) / 0.05;
+        constexpr double lightnessThreshold = 0.7;
+        constexpr double wcagLargeTextAA = 3.0;
+        bool black = lightness > lightnessThreshold;
+        if (black ? withBlack < wcagLargeTextAA : withWhite < wcagLargeTextAA)
+            black = !black;
+        return black ? rgb8(0x000000) : rgb8(0xffffff);
     }
 
     // CSS Color 5 section 3.3, with CSS Values 5 section 6.1's percentage normalization
@@ -2007,11 +2077,118 @@ QSvgCssColorParseResult qsvg_parseCssColor(QStringView text, const QSvgCssColorC
     Parser p(tokenize(text), context);
     result.color = p.parseWhole();
     result.usesCurrentColor = p.usesCurrentColor;
+    result.note = p.note;
     if (p.m_failed) {
         result.color = QSvgCssColor();
         result.error = p.m_error;
     }
     return result;
+}
+
+// CSS Color Adjustment 1 (CR Snapshot 30 October 2026) section 2.2: color-scheme,
+// normal | [ light | dark | <custom-ident> ]+ && only?
+bool qsvg_parseColorScheme(QStringView text, QSvgCssColorSchemeValue *value, bool *keepsParent, QString *error)
+{
+    *keepsParent = false;
+    const QList<QStringView> words = text.trimmed().split(QRegularExpression(u"[ \t\n\r\f]+"_s), Qt::SkipEmptyParts);
+    auto is = [](QStringView word, QLatin1StringView keyword) {
+        return word.compare(keyword, Qt::CaseInsensitive) == 0;
+    };
+    static const QLatin1StringView cssWide[] = {"initial"_L1, "inherit"_L1, "unset"_L1, "revert"_L1,
+                                                "revert-layer"_L1};
+    auto isCssWide = [&](QStringView word) {
+        return std::any_of(std::begin(cssWide), std::end(cssWide), [&](QLatin1StringView k) { return is(word, k); });
+    };
+    if (words.isEmpty()) {
+        *error = QStringLiteral("empty value");
+        return false;
+    }
+    if (words.size() == 1 && is(words.first(), "normal"_L1)) {
+        *value = QSvgCssColorSchemeValue();
+        return true;
+    }
+    if (words.size() == 1 && isCssWide(words.first())) {
+        if (is(words.first(), "initial"_L1))
+            *value = QSvgCssColorSchemeValue();
+        else
+            *keepsParent = true;   // the property is inherited, so inherit, unset and revert keep the parent's value
+        return true;
+    }
+    // <custom-ident> (CSS Values 4 section 4.2): an identifier that is no CSS-wide keyword and not "default"
+    static const QRegularExpression ident(
+            u"^(--|-?[A-Za-z_\\x{80}-\\x{10FFFF}])[A-Za-z0-9_\\-\\x{80}-\\x{10FFFF}]*$"_s);
+    QSvgCssColorSchemeValue out;
+    out.normal = false;
+    int idents = 0;
+    for (qsizetype i = 0; i < words.size(); ++i) {
+        const QStringView w = words.at(i);
+        if (is(w, "only"_L1)) {
+            // && only?: once, before or after the colour schemes
+            if (out.only || (i != 0 && i != words.size() - 1)) {
+                *error = QStringLiteral("\"only\" goes once, before or after the colour schemes");
+                return false;
+            }
+            out.only = true;
+            continue;
+        }
+        if (is(w, "normal"_L1) || is(w, "default"_L1) || isCssWide(w) || !ident.matchView(w).hasMatch()) {
+            *error = QStringLiteral("\"%1\" is not a colour scheme").arg(w);
+            return false;
+        }
+        ++idents;
+        if (is(w, "light"_L1))
+            out.schemes.append(QSvgCssColorScheme::Light);
+        else if (is(w, "dark"_L1))
+            out.schemes.append(QSvgCssColorScheme::Dark);
+        // any other <custom-ident> is meaningless (section 2.2) and supports nothing
+    }
+    if (!idents) {
+        *error = QStringLiteral("no colour scheme");
+        return false;
+    }
+    *value = out;
+    return true;
+}
+
+// CSS Color Adjustment 1 section 2.3, "To determine the used color scheme"
+QSvgCssColorScheme qsvg_usedColorScheme(const QSvgCssColorSchemeValue &support,
+                                        QSvgCssColorSchemePreference preference)
+{
+    // "If support is null, or none of the color schemes in support are supported by the UA, return the UA default
+    // color scheme": light
+    if (support.normal || support.schemes.isEmpty())
+        return QSvgCssColorScheme::Light;
+    // "If preference is no preference, return the first supported color scheme in support."
+    if (preference == QSvgCssColorSchemePreference::None)
+        return support.schemes.first();
+    // "If preference's color scheme is in support and supported by the UA, return that color scheme."
+    const QSvgCssColorScheme wanted = preference == QSvgCssColorSchemePreference::Dark ? QSvgCssColorScheme::Dark
+                                                                                      : QSvgCssColorScheme::Light;
+    if (support.schemes.contains(wanted))
+        return wanted;
+    // "If support is flagged as sole support, return the first supported color scheme in support."  There is no
+    // overriding preference here, so otherwise too: "return the first supported color scheme in support".
+    return support.schemes.first();
+}
+
+static std::optional<QSvgCssColorSchemePreference> preferenceOverride;
+
+void qsvg_setPreferredColorSchemeOverride(std::optional<QSvgCssColorSchemePreference> preference)
+{
+    preferenceOverride = preference;
+}
+
+QSvgCssColorSchemePreference qsvg_preferredColorScheme()
+{
+    if (preferenceOverride)
+        return *preferenceOverride;
+    if (!qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
+        return QSvgCssColorSchemePreference::None;
+    switch (QGuiApplication::styleHints()->colorScheme()) {
+    case Qt::ColorScheme::Dark: return QSvgCssColorSchemePreference::Dark;
+    case Qt::ColorScheme::Light: return QSvgCssColorSchemePreference::Light;
+    default: return QSvgCssColorSchemePreference::None;
+    }
 }
 
 QSvgCssColorTarget QSvgCssColorTarget::forDevice(const QPaintDevice *device)

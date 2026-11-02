@@ -70,3 +70,32 @@ static const struct { const char *name; const char *css; QImage::Format format; 
     {"color-rec2100-pq rgba32f", "color(rec2100-pq 0.5 0.45 0.4)", QImage::Format_RGBA32FPx4, -1, {0.7873799550261054, 0.5380864404713642, 0.41434515519587045}, false},
     {"color-rec2100-pq rgba32f-2020", "color(rec2100-pq 0.5 0.45 0.4)", QImage::Format_RGBA32FPx4, QColorSpace::Bt2020, {0.719897871811976, 0.5819212173750409, 0.46580537788114085}, false},
 };
+static const struct { const char *name; const char *svg; QSvgCssColorSchemePreference preference; double rgb[3]; } schemeRows[] = {
+    {"no color-scheme, no preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::None, {0.2, 0.4, 0.6}},
+    {"no color-scheme, dark preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Dark, {0.2, 0.4, 0.6}},
+    {"light, dark preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: light\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Dark, {0.2, 0.4, 0.6}},
+    {"dark, no preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: dark\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::None, {0.8, 0.6, 0.4}},
+    {"dark, light preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: dark\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Light, {0.8, 0.6, 0.4}},
+    {"light dark, no preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: light dark\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::None, {0.2, 0.4, 0.6}},
+    {"light dark, light preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: light dark\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Light, {0.2, 0.4, 0.6}},
+    {"light dark, dark preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: light dark\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Dark, {0.8, 0.6, 0.4}},
+    {"dark light, no preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: dark light\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::None, {0.8, 0.6, 0.4}},
+    {"only light, dark preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: only light\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Dark, {0.2, 0.4, 0.6}},
+    {"only dark, light preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: dark only\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Light, {0.8, 0.6, 0.4}},
+    {"custom ident only, dark preference", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: foo\"><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::Dark, {0.2, 0.4, 0.6}},
+    {"inherited from a group", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: dark\"><g><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></g></svg>", QSvgCssColorSchemePreference::None, {0.8, 0.6, 0.4}},
+    {"normal under a dark group", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><g style=\"color-scheme: dark\"><rect width=\"4\" height=\"4\" style=\"color-scheme: normal; fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></g></svg>", QSvgCssColorSchemePreference::None, {0.2, 0.4, 0.6}},
+    {"nested in color-mix()", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\" style=\"color-scheme: dark\"><rect width=\"4\" height=\"4\" style=\"fill: color-mix(in srgb, light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4)), white 25%)\"/></svg>", QSvgCssColorSchemePreference::None, {0.8500000000000001, 0.7, 0.55}},
+    {"from a style sheet", "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"><style>rect { color-scheme: dark }</style><rect width=\"4\" height=\"4\" style=\"fill: light-dark(color(srgb 0.2 0.4 0.6), color(srgb 0.8 0.6 0.4))\"/></svg>", QSvgCssColorSchemePreference::None, {0.8, 0.6, 0.4}},
+};
+static const struct { const char *background; bool black; bool wcagBlack; double ratio; } contrastRows[] = {
+    {"#e74c3c", false, true, 3.820000520678017},  // Oklab L 0.6307
+    {"#3498db", false, true, 3.153189482342993},  // Oklab L 0.6531
+    {"#808080", false, true, 3.9494396480491147},  // Oklab L 0.5999
+    {"#ff0000", false, true, 3.997882936374221},  // Oklab L 0.6280
+    {"oklch(0.65 0.15 250)", false, true, 3.2256623841268866},  // Oklab L 0.6500
+    {"#ff6600", true, true, 7.153245356944874},  // Oklab L 0.6958
+    {"oklch(0.75 0.1 100)", true, true, 9.507153137627734},  // Oklab L 0.7500
+    {"color(display-p3 0.2 0.3 0.4)", false, false, 8.84008966530431},  // Oklab L 0.4079
+    {"oklch(0.6 0.25 145)", false, true, 3.5224941455712933},  // Oklab L 0.6088
+};

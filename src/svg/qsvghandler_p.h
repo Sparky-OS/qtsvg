@@ -70,6 +70,13 @@ public:
     QColor currentColor() const;
     QSvgCssColor currentCssColor() const;
 
+    // the computed value of color-scheme (CSS Color Adjustment 1 section 2.2), inherited from element to element
+    void setColorScheme(const QSvgCssColorSchemeValue &value);
+    // the element colour scheme that system colours and light-dark() follow (CSS Color Adjustment 1 section 2.4)
+    QSvgCssColorScheme elementColorScheme() const;
+    // says once per document and colour scheme that system colours came from Qt's default palette
+    void noteSystemColors(QSvgCssColorScheme scheme, const QString &note);
+
     void pushUnresolvedStyle(QSvgStyleProperty *prop);
 
 #ifndef QT_NO_CSSPARSER
@@ -149,6 +156,10 @@ private:
 
     const QtSvg::Options m_options;
     const QtSvg::AnimatorType m_animatorType;
+
+    QStack<QSvgCssColorSchemeValue> m_colorSchemeStack;
+    QSvgCssColorSchemePreference m_colorSchemePreference = QSvgCssColorSchemePreference::None;
+    bool m_systemColorsNoted[2] = {false, false};
 };
 
 Q_DECLARE_LOGGING_CATEGORY(lcSvgHandler)

@@ -24,6 +24,7 @@
 
 #include <array>
 #include <memory>
+#include <optional>
 
 QT_BEGIN_NAMESPACE
 
@@ -99,11 +100,46 @@ struct QSvgCssColor::HdrPair
     double h1, h2;
 };
 
-// What a colour is resolved against while it is parsed (CSS Color 4 sections 6.2 and 6.4, CSS Color 5 section 7).
+// The colour schemes Qt SVG supports (CSS Color Adjustment 1, CR Snapshot 30 October 2026, section 2).
+enum class QSvgCssColorScheme : quint8 { Light, Dark };
+
+// A colour scheme preference (CSS Color Adjustment 1 section 2.3): no preference, light or dark.
+enum class QSvgCssColorSchemePreference : quint8 { None, Light, Dark };
+
+// The computed value of the color-scheme property (CSS Color Adjustment 1 section 2.2): normal, or a colour scheme
+// support, the light and dark keywords in their order (<custom-ident>s are meaningless and left out) and whether
+// "only" was given.
+struct Q_SVG_EXPORT QSvgCssColorSchemeValue
+{
+    bool normal = true;
+    QList<QSvgCssColorScheme> schemes;
+    bool only = false;
+};
+
+// Parses a color-scheme value: normal | [ light | dark | <custom-ident> ]+ && only?.  inherit and the other
+// CSS-wide keywords that keep the parent's value set *keepsParent; initial gives normal.  On failure, returns false
+// and *error says why.
+Q_SVG_EXPORT bool qsvg_parseColorScheme(QStringView text, QSvgCssColorSchemeValue *value, bool *keepsParent,
+                                        QString *error);
+
+// CSS Color Adjustment 1 section 2.3, the used colour scheme of a support (normal is a null support) for a
+// preference; Qt SVG supports light and dark, and its default is light.
+Q_SVG_EXPORT QSvgCssColorScheme qsvg_usedColorScheme(const QSvgCssColorSchemeValue &support,
+                                                     QSvgCssColorSchemePreference preference);
+
+// The preferred colour scheme of the documents Qt SVG renders: an SVG document is embedded in the application, whose
+// colour scheme is its preference (CSS Color Adjustment 1 section 2.1), so the application's colour scheme
+// (QStyleHints::colorScheme()), and no preference without a QGuiApplication or when the platform does not say.
+Q_SVG_EXPORT QSvgCssColorSchemePreference qsvg_preferredColorScheme();
+// For tests: replaces the application's colour scheme as the preference; std::nullopt restores it.
+Q_SVG_EXPORT void qsvg_setPreferredColorSchemeOverride(std::optional<QSvgCssColorSchemePreference> preference);
+
+// What a colour is resolved against while it is parsed (CSS Color 4 sections 6.2 and 6.4, CSS Color 5 section 7):
+// currentcolor, and the element colour scheme that system colours and light-dark() follow.
 struct Q_SVG_EXPORT QSvgCssColorContext
 {
     QSvgCssColor currentColor = QSvgCssColor(QSvgCssColor::Srgb, 0, 0, 0);
-    bool darkScheme = false;
+    QSvgCssColorScheme colorScheme = QSvgCssColorScheme::Light;
     bool usePalette = true;
 };
 
@@ -112,6 +148,9 @@ struct Q_SVG_EXPORT QSvgCssColorParseResult
     QSvgCssColor color;
     bool usesCurrentColor = false;
     QString error;
+    // set when a system colour comes from Qt's default palette for the element colour scheme, because the
+    // application palette is one of the other colour scheme
+    QString note;
 };
 
 // Parses a <color> (the whole string must be one colour).  On failure the result's colour is invalid and error says why.

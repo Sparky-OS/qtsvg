@@ -445,10 +445,11 @@ static bool resolveColor(QStringView colorStr, QColor &color, QSvgHandler *handl
 
     QSvgCssColorContext context;
     context.currentColor = handler->currentCssColor();
-    // CSS Color 5 section 7: light-dark() follows the colour scheme, here the application's
-    if (qobject_cast<QGuiApplication *>(QCoreApplication::instance()))
-        context.darkScheme = QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;
+    // system colours and light-dark() follow the element colour scheme (CSS Color Adjustment 1 section 2.4)
+    context.colorScheme = handler->elementColorScheme();
     const QSvgCssColorParseResult result = qsvg_parseCssColor(text, context);
+    if (!result.note.isEmpty())
+        handler->noteSystemColors(context.colorScheme, result.note);
     if (result.color.isValid()) {
         color = result.color.toQColor();
         if (css)
@@ -531,6 +532,29 @@ static bool createSvgGlyph(QSvgFont *font, const QXmlStreamAttributes &attribute
     }
     font->addGlyph(uncStr.toString(), path, havx);
     return true;
+}
+
+// CSS Color Adjustment 1 section 2.2: color-scheme, from style sheets and style attributes only; SVG 2 section 6.6
+// defines no presentation attribute for it, and other attributes "must not be parsed as a presentation attribute"
+static void parseColorScheme(const QXmlStreamAttributes &cssAttributes, QSvgHandler *handler)
+{
+    QStringView text;
+    for (const QXmlStreamAttribute &attribute : cssAttributes) {
+        if (attribute.qualifiedName().compare("color-scheme"_L1, Qt::CaseInsensitive) == 0)
+            text = attribute.value();   // the last declaration wins
+    }
+    if (text.isNull())
+        return;
+    QSvgCssColorSchemeValue value;
+    bool keepsParent = false;
+    QString error;
+    if (!qsvg_parseColorScheme(text, &value, &keepsParent, &error)) {
+        qCWarning(lcSvgHandler, "Invalid color-scheme \"%s\": %s; the declaration is ignored",
+                  qPrintable(text.toString()), qPrintable(error));
+        return;
+    }
+    if (!keepsParent)
+        handler->setColorScheme(value);
 }
 
 static void parseColor(QSvgNode *,
@@ -1441,6 +1465,7 @@ static bool parseStyle(QSvgNode *node,
     if (!style.isEmpty())
         handler->cssHandler().parseCSStoXMLAttrs(style.toString(), cssAttributes);
     svgAttributes.setAttributes(cssAttributes, handler);
+    parseColorScheme(cssAttributes, handler);
 
     parseOffsetPath(node, cssAttributes);
     if (!handler->options().testFlag(QtSvg::DisableCSSAnimations))
@@ -3019,12 +3044,14 @@ static bool parseStopNode(QSvgStyleProperty *parent,
     QXmlStreamAttributes cssAttributes;
     handler->cssHandler().styleLookup(&dummy, cssAttributes);
     attrs.setAttributes(cssAttributes, handler);
+    parseColorScheme(cssAttributes, handler);
 
     QXmlStreamAttributes styleCssAttributes;
     QStringView style = attributes.value(QLatin1String("style"));
     if (!style.isEmpty())
         handler->cssHandler().parseCSStoXMLAttrs(style.toString(), styleCssAttributes);
     attrs.setAttributes(styleCssAttributes, handler);
+    parseColorScheme(styleCssAttributes, handler);
 #endif
 
     //TODO: Handle style parsing for gradients stop like the rest of the nodes.
@@ -3623,6 +3650,7 @@ void QSvgHandler::init()
     m_defaultCoords = QSvgUtils::LT_PX;
     m_defaultPen = QPen(Qt::black, 1, Qt::SolidLine, Qt::FlatCap, Qt::SvgMiterJoin);
     m_defaultPen.setMiterLimit(4);
+    m_colorSchemePreference = qsvg_preferredColorScheme();
     parse();
 }
 
@@ -3798,6 +3826,7 @@ bool QSvgHandler::startElement(const QStringView localName,
     QSvgNode *node = nullptr;
 
     pushColorCopy();
+    m_colorSchemeStack.push(m_colorSchemeStack.isEmpty() ? QSvgCssColorSchemeValue() : m_colorSchemeStack.top());
 
     /* The xml:space attribute may appear on any element. We do
      * a lookup by the qualified name here, but this is namespace aware, since
@@ -3999,6 +4028,8 @@ bool QSvgHandler::endElement(const QStringView localName)
     m_whitespaceMode.pop();
 
     popColor();
+    if (!m_colorSchemeStack.isEmpty())
+        m_colorSchemeStack.pop();
 
     if (node == Unknown)
         return false;
@@ -4170,6 +4201,31 @@ void QSvgHandler::popColor()
 QColor QSvgHandler::currentColor() const
 {
     return currentCssColor().toQColor();
+}
+
+void QSvgHandler::setColorScheme(const QSvgCssColorSchemeValue &value)
+{
+    if (m_colorSchemeStack.isEmpty())
+        m_colorSchemeStack.push(value);
+    else
+        m_colorSchemeStack.top() = value;
+}
+
+QSvgCssColorScheme QSvgHandler::elementColorScheme() const
+{
+    // normal: the page colour scheme, the used colour scheme of the page's supported colour schemes; SVG has no way
+    // to set them, so that is a null support, and the default, light (CSS Color Adjustment 1 sections 2.1 to 2.3)
+    return qsvg_usedColorScheme(m_colorSchemeStack.isEmpty() ? QSvgCssColorSchemeValue() : m_colorSchemeStack.top(),
+                                m_colorSchemePreference);
+}
+
+void QSvgHandler::noteSystemColors(QSvgCssColorScheme scheme, const QString &note)
+{
+    bool &said = m_systemColorsNoted[scheme == QSvgCssColorScheme::Dark ? 1 : 0];
+    if (!said) {
+        qCWarning(lcSvgHandler, "%s", qPrintable(note));
+        said = true;
+    }
 }
 
 QSvgCssColor QSvgHandler::currentCssColor() const
